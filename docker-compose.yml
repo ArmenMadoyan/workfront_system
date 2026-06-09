@@ -77,3 +77,38 @@ services:
       timeout: 3s
       retries: 10
     networks: [cascade-vpc]
+
+  # ── Observability UIs ─────────────────────────────────────────────────────
+  # Jaeger — distributed tracing "God View" (OTLP in, UI on :16686)
+  jaeger:
+    image: jaegertracing/all-in-one:1.57
+    ports:
+      - "16686:16686"   # UI
+      - "4317:4317"     # OTLP gRPC (services export here)
+      - "4318:4318"     # OTLP HTTP
+    environment:
+      COLLECTOR_OTLP_ENABLED: "true"
+    networks: [cascade-vpc]
+
+  # Kafka UI — browse topics, messages, consumer-group lag, Debezium connector
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    depends_on:
+      kafka:
+        condition: service_healthy
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_NAME: debezium
+      KAFKA_CLUSTERS_0_KAFKACONNECT_0_ADDRESS: http://kafka-connect:8083
+      DYNAMIC_CONFIG_ENABLED: "true"
+    networks: [cascade-vpc]
+
+  # RedisInsight — inspect keys + watch project:* pub/sub fan-out
+  redisinsight:
+    image: redis/redisinsight:latest
+    ports:
+      - "5540:5540"
+    networks: [cascade-vpc]

@@ -16,6 +16,7 @@
 
     "producer.override.enable.idempotence": "true",
     "producer.override.acks": "all",
+    "producer.override.max.request.size": "10485760",
 
     "transforms": "outbox",
     "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",

@@ -28,10 +28,15 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.exc import StaleDataError
 
+from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
 from services.worker.src import cascade as casc
 from wf_core import models
 from wf_core.config import settings
 from wf_core.db import async_session_scope
+from wf_core.telemetry import inject_trace, setup_tracing
+
+setup_tracing("workfront-api")
 
 log = logging.getLogger("api")
 
@@ -93,6 +98,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="workfront-api", version="0.2.0", lifespan=lifespan)
+FastAPIInstrumentor.instrument_app(app)  # auto server span per request
 
 
 @app.exception_handler(StaleDataError)
@@ -280,6 +286,7 @@ async def reschedule_task(
                 "planned_start": body.planned_start.isoformat(),
                 "planned_completion": body.planned_completion.isoformat(),
                 "version": t.version,
+                "_trace": inject_trace({}),  # carry the trace across the Kafka hop
             },
         )
     )

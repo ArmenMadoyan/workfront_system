@@ -23,6 +23,7 @@ from sqlalchemy.orm.exc import StaleDataError
 
 from wf_core.config import settings
 from wf_core.db import session_scope
+from wf_core.telemetry import extract_context, setup_tracing, tracer
 
 from .handler import process_schedule_changed
 
@@ -65,6 +66,7 @@ def _parse(msg) -> tuple[uuid.UUID, uuid.UUID]:
 
 
 def run() -> None:
+    setup_tracing("workfront-worker")
     consumer = _consumer()
     consumer.subscribe([TOPIC])
     dlq = _producer()
@@ -78,9 +80,16 @@ def run() -> None:
                 log.error("kafka error: %s", msg.error())
                 continue
             try:
-                event_id, task_id = _parse(msg)
-                with session_scope() as s:
-                    changes = process_schedule_changed(s, event_id, task_id)
+                payload = json.loads(msg.value())
+                event_id = uuid.UUID(_header(msg, "id") or payload["event_id"])
+                task_id = uuid.UUID(payload["task_id"])
+                # resume the trace started by the API (carried in the payload)
+                ctx = extract_context(payload.get("_trace", {}))
+                with tracer().start_as_current_span("worker.cascade", context=ctx) as span:
+                    span.set_attribute("task_id", str(task_id))
+                    with session_scope() as s:
+                        changes = process_schedule_changed(s, event_id, task_id)
+                    span.set_attribute("downstream_changes", len(changes))
                 consumer.commit(msg)
                 log.info("processed event %s -> %d downstream changes", event_id, len(changes))
             except StaleDataError:
