@@ -1,0 +1,18 @@
+[project]
+name = "wf_core"
+version = "0.1.0"
+description = "Shared models, db session, and event schemas for the Workfront core system"
+requires-python = ">=3.12"
+dependencies = [
+    "sqlalchemy>=2.0",
+    "psycopg[binary]>=3.1",
+    "alembic>=1.13",
+    "pydantic>=2.6",
+]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["wf_core*"]

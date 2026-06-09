@@ -1,0 +1,47 @@
+syntax = "proto3";
+
+package workfront.scheduling.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// Internal gRPC contract between the worker (client) and graph_service (server).
+// graph_service owns the Neo4j connection; it answers "who is affected by a
+// change to this task, and in what dependency order".
+service SchedulingGraph {
+  // Transitive successors of the changed task, already topologically ordered.
+  rpc GetAffectedSubgraph(SubgraphRequest) returns (Subgraph);
+}
+
+enum DepType {
+  DEP_TYPE_UNSPECIFIED = 0;
+  FS = 1; // finish-to-start
+  SS = 2; // start-to-start
+  FF = 3; // finish-to-finish
+  SF = 4; // start-to-finish
+}
+
+message SubgraphRequest {
+  string task_id  = 1;
+  int32  max_depth = 2; // 0 = unbounded
+}
+
+message TaskNode {
+  string task_id = 1;
+  int64  version = 2;                                 // optimistic concurrency
+  google.protobuf.Timestamp planned_start      = 3;
+  google.protobuf.Timestamp planned_completion = 4;
+  int32  work_required_minutes = 5;
+  string calendar_id = 6;
+}
+
+message DepEdge {
+  string  predecessor_id = 1;
+  string  successor_id   = 2;
+  DepType type           = 3;
+  int32   lag_minutes    = 4;
+}
+
+message Subgraph {
+  repeated TaskNode nodes = 1; // in topological order
+  repeated DepEdge  edges = 2;
+}
