@@ -14,6 +14,10 @@ WebSocket event. The public contract is identical either way.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+import json
+import logging
 import uuid
 from datetime import datetime, timezone
 
@@ -24,7 +28,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from services.worker.src import cascade as casc
 from wf_core import models
+from wf_core.config import settings
 from wf_core.db import async_session_scope
+
+log = logging.getLogger("api")
 
 from .schemas import (
     GanttOut,
@@ -41,7 +48,44 @@ from .schemas import (
 )
 from .ws import manager
 
-app = FastAPI(title="workfront-api", version="0.2.0")
+
+async def _redis_subscriber() -> None:
+    """Subscribe to project:* and push cascade events to local WebSockets.
+
+    Resilient: if Redis isn't up (pure local mode), we log and skip — the api
+    still serves REST/WS, with the inline-cascade path covering the demo.
+    """
+    try:
+        import redis.asyncio as aioredis
+    except ImportError:
+        log.warning("redis not installed; WS fan-out disabled")
+        return
+    try:
+        r = aioredis.from_url(settings.redis_url)
+        pubsub = r.pubsub()
+        await pubsub.psubscribe("project:*")
+        log.info("subscribed to redis project:* for WS fan-out")
+        async for msg in pubsub.listen():
+            if msg.get("type") != "pmessage":
+                continue
+            event = json.loads(msg["data"])
+            await manager.push_local(str(event.get("project_id")), event)
+    except Exception as exc:  # noqa: BLE001
+        log.warning("redis fan-out unavailable: %s", exc)
+
+
+@contextlib.asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = asyncio.create_task(_redis_subscriber())
+    try:
+        yield
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
+
+
+app = FastAPI(title="workfront-api", version="0.2.0", lifespan=lifespan)
 
 
 # --- dependencies -------------------------------------------------------------
@@ -210,16 +254,17 @@ async def reschedule_task(
         )
     )
 
-    # 3. DEV inline cascade (prod: worker does this off Kafka)
-    changes = await _run_cascade(s, t)
-    await s.flush()
-
-    # 4. push the ripple over WebSocket (batched)
-    await manager.broadcast(
-        str(t.project_id),
-        "schedule.cascade",
-        {"origin_task_id": str(t.id), "changes": [c.model_dump(mode="json") for c in changes]},
-    )
+    # 3. cascade. INLINE_CASCADE=true (local, no Kafka) computes it here and
+    #    pushes over WS directly. In the full pipeline this is false: the worker
+    #    consumes the outbox event and the ripple returns via Redis fan-out.
+    if settings.inline_cascade:
+        changes = await _run_cascade(s, t)
+        await s.flush()
+        await manager.broadcast(
+            str(t.project_id),
+            "schedule.cascade",
+            {"origin_task_id": str(t.id), "changes": [c.model_dump(mode="json") for c in changes]},
+        )
     return t
 
 

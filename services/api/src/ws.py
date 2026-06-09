@@ -43,6 +43,21 @@ class ConnectionManager:
         self._seq[project_id] += 1
         return self._seq[project_id]
 
+    async def push_local(self, project_id: str, event: dict) -> None:
+        """Send a fully-formed event (e.g. from Redis fan-out) to local sockets.
+
+        Unlike `broadcast`, this does NOT assign a seq — the producer (ws-fanout)
+        already set it from the Kafka offset.
+        """
+        dead: list[WebSocket] = []
+        for ws in list(self._rooms.get(project_id, ())):
+            try:
+                await ws.send_json(event)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
     async def broadcast(self, project_id: str, type_: str, data: dict) -> WSEvent:
         event = WSEvent(
             type=type_,

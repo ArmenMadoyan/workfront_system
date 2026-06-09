@@ -1,0 +1,35 @@
+{
+  "name": "wf-outbox-connector",
+  "config": {
+    "connector.class": "io.debezium.connector.postgresql.PostgresConnector",
+    "plugin.name": "pgoutput",
+    "database.hostname": "host.docker.internal",
+    "database.port": "5432",
+    "database.user": "amadoyan",
+    "database.password": "",
+    "database.dbname": "workfront_core",
+    "topic.prefix": "wf",
+    "table.include.list": "public.outbox",
+    "slot.name": "wf_outbox_slot",
+    "publication.name": "wf_outbox_pub",
+    "publication.autocreate.mode": "filtered",
+
+    "producer.override.enable.idempotence": "true",
+    "producer.override.acks": "all",
+
+    "transforms": "outbox",
+    "transforms.outbox.type": "io.debezium.transforms.outbox.EventRouter",
+    "transforms.outbox.table.field.event.id": "id",
+    "transforms.outbox.table.field.event.key": "partition_key",
+    "transforms.outbox.table.field.event.type": "event_type",
+    "transforms.outbox.table.field.event.payload": "payload",
+    "transforms.outbox.table.field.event.timestamp": "created_at",
+    "transforms.outbox.table.expand.json.payload": "true",
+    "transforms.outbox.route.by.field": "event_type",
+    "transforms.outbox.route.topic.replacement": "${routedByValue}",
+
+    "key.converter": "org.apache.kafka.connect.storage.StringConverter",
+    "value.converter": "org.apache.kafka.connect.json.JsonConverter",
+    "value.converter.schemas.enable": "false"
+  }
+}

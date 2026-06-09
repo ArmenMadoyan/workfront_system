@@ -39,6 +39,9 @@ SERVICES: dict[str, tuple[str, int]] = {
 def _env() -> dict[str, str]:
     env = os.environ.copy()
     env.setdefault("DATABASE_URL", DEFAULT_DB)
+    # locally-run services reach the dockerized infra on localhost
+    env.setdefault("KAFKA_BROKERS", "localhost:9094")
+    env.setdefault("REDIS_URL", "redis://localhost:6379")
     # make both the repo root (for `services.*`) and wf_core importable
     env["PYTHONPATH"] = os.pathsep.join([str(ROOT), str(WF_CORE), env.get("PYTHONPATH", "")])
     return env

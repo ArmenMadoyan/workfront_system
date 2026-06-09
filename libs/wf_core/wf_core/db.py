@@ -28,9 +28,16 @@ from wf_core.config import settings
 
 
 # --- sync (worker / projector / migrations) ----------------------------------
+# Pin every connection to UTC so timestamptz always round-trips as UTC,
+# keeping the wire format (Gantt, events) consistent regardless of server TZ.
+_UTC_CONNECT_ARGS = {"options": "-c timezone=utc"}
+
+
 @lru_cache(maxsize=1)
 def get_engine() -> Engine:
-    return create_engine(settings.database_url, pool_pre_ping=True, future=True)
+    return create_engine(
+        settings.database_url, pool_pre_ping=True, future=True, connect_args=_UTC_CONNECT_ARGS
+    )
 
 
 @lru_cache(maxsize=1)
@@ -59,7 +66,9 @@ def session_scope() -> Iterator[Session]:
 # --- async (api gateway) ------------------------------------------------------
 @lru_cache(maxsize=1)
 def get_async_engine() -> AsyncEngine:
-    return create_async_engine(settings.database_url, pool_pre_ping=True)
+    return create_async_engine(
+        settings.database_url, pool_pre_ping=True, connect_args=_UTC_CONNECT_ARGS
+    )
 
 
 @lru_cache(maxsize=1)

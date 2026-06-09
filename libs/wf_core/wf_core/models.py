@@ -330,3 +330,18 @@ class OutboxEvent(Base):
     created_at: Mapped[datetime] = _created()
 
     __table_args__ = (Index("ix_outbox_created_at", "created_at"),)
+
+
+class ProcessedEvent(Base):
+    """Consumer-side dedup inbox for effectively-once processing.
+
+    Checked + inserted in the SAME tx as a consumer's side effects, keyed by the
+    consumer group + the source event id. A redelivery finds the row and skips,
+    so each event's effects apply exactly once even under at-least-once delivery.
+    """
+
+    __tablename__ = "processed_event"
+
+    consumer_group: Mapped[str] = mapped_column(String(128), primary_key=True)
+    event_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    processed_at: Mapped[datetime] = _created()
