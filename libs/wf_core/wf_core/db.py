@@ -10,6 +10,7 @@ or a reachable database (e.g. the pure cascade logic imports nothing here).
 
 from __future__ import annotations
 
+import os
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
 from functools import lru_cache
@@ -66,8 +67,13 @@ def session_scope() -> Iterator[Session]:
 # --- async (api gateway) ------------------------------------------------------
 @lru_cache(maxsize=1)
 def get_async_engine() -> AsyncEngine:
+    # The api is high-concurrency; the default pool (~5) starves under load.
     return create_async_engine(
-        settings.database_url, pool_pre_ping=True, connect_args=_UTC_CONNECT_ARGS
+        settings.database_url,
+        pool_pre_ping=True,
+        pool_size=int(os.getenv("DB_POOL_SIZE", "40")),
+        max_overflow=int(os.getenv("DB_MAX_OVERFLOW", "20")),
+        connect_args=_UTC_CONNECT_ARGS,
     )
 
 

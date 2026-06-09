@@ -77,11 +77,16 @@ def process_schedule_changed(
             for e in edge_rows
             if str(e.predecessor_id) in nodes and str(e.successor_id) in nodes
         ]
-        for ch in casc.cascade(str(origin.id), nodes, edges):
+        result = casc.cascade(str(origin.id), nodes, edges)
+        for ch in result:
             t = by_id[ch.task_id]
             t.planned_start = ch.new_start
             t.planned_completion = ch.new_finish
-            t.version += 1
+        # flush so version_id_col bumps versions (and raises StaleDataError if a
+        # human edited a downstream task mid-cascade -> tx rolls back -> redelivery)
+        s.flush()
+        for ch in result:
+            t = by_id[ch.task_id]
             changes.append(
                 {
                     "task_id": ch.task_id,

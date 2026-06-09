@@ -21,10 +21,12 @@ import logging
 import uuid
 from datetime import datetime, timezone
 
-from fastapi import Depends, FastAPI, Header, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
 from pydantic import ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.exc import StaleDataError
 
 from services.worker.src import cascade as casc
 from wf_core import models
@@ -91,6 +93,30 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="workfront-api", version="0.2.0", lifespan=lifespan)
+
+
+@app.exception_handler(StaleDataError)
+async def _version_conflict(request: Request, exc: StaleDataError) -> JSONResponse:
+    """A concurrent write won the optimistic-lock race -> 409 so the client refetches."""
+    return JSONResponse(
+        status_code=409,
+        content={
+            "error": {
+                "code": "version_conflict",
+                "message": "resource was modified concurrently; refetch and retry",
+            }
+        },
+    )
+
+
+def _require_match(current_version: int, if_match: int | None) -> None:
+    """Stale-client guard: the version the client holds must be the current one."""
+    if if_match is None:
+        raise HTTPException(428, "If-Match: <version> required")
+    if current_version != if_match:
+        raise HTTPException(
+            409, f"version conflict: current {current_version}, sent {if_match}"
+        )
 
 
 # --- dependencies -------------------------------------------------------------
@@ -205,16 +231,17 @@ async def create_task(
 async def update_task(
     task_id: uuid.UUID,
     body: TaskUpdate,
+    if_match: int | None = Header(default=None, alias="If-Match"),
     customer_id: uuid.UUID = Depends(current_customer_id),
     s: AsyncSession = Depends(get_session),
 ) -> models.Task:
     t = await _load_task(s, task_id, customer_id)
+    _require_match(t.version, if_match)
     if body.name is not None:
         t.name = body.name
     if body.status is not None:
         t.status = body.status
-    t.version += 1
-    await s.flush()
+    await s.flush()  # version_id_col bumps version / raises StaleDataError
     await manager.broadcast(
         str(t.project_id),
         "task.updated",
@@ -231,16 +258,14 @@ async def reschedule_task(
     customer_id: uuid.UUID = Depends(current_customer_id),
     s: AsyncSession = Depends(get_session),
 ) -> models.Task:
-    if if_match is None:
-        raise HTTPException(428, "If-Match: <version> required for schedule moves")
     t = await _load_task(s, task_id, customer_id)
-    if t.version != if_match:
-        raise HTTPException(409, f"version conflict: have {t.version}, sent {if_match}")
+    _require_match(t.version, if_match)
 
-    # 1. move the task (authoritative) + bump version
+    # 1. move the task; version_id_col auto-bumps version on flush, raising
+    #    StaleDataError (-> 409) if a concurrent write won the race.
     t.planned_start = body.planned_start
     t.planned_completion = body.planned_completion
-    t.version += 1
+    await s.flush()
 
     # 2. write the outbox row (same tx) — the durable cascade trigger
     s.add(
@@ -276,12 +301,15 @@ async def reschedule_task(
 @app.delete("/api/v1/tasks/{task_id}", status_code=204)
 async def delete_task(
     task_id: uuid.UUID,
+    if_match: int | None = Header(default=None, alias="If-Match"),
     customer_id: uuid.UUID = Depends(current_customer_id),
     s: AsyncSession = Depends(get_session),
 ) -> None:
     t = await _load_task(s, task_id, customer_id)
+    _require_match(t.version, if_match)
     project_id = t.project_id
     await s.delete(t)
+    await s.flush()  # DELETE ... WHERE version=? -> StaleDataError on a concurrent edit
     await manager.broadcast(str(project_id), "task.deleted", {"task_id": str(task_id)})
 
 
@@ -385,18 +413,18 @@ async def _run_cascade(s: AsyncSession, origin: models.Task) -> list[ScheduleCha
         if str(e.predecessor_id) in nodes and str(e.successor_id) in nodes
     ]
 
-    out: list[ScheduleChangeOut] = []
-    for ch in casc.cascade(str(origin.id), nodes, edges):
+    result = casc.cascade(str(origin.id), nodes, edges)
+    for ch in result:
         t = by_id[ch.task_id]
         t.planned_start = ch.new_start
         t.planned_completion = ch.new_finish
-        t.version += 1
-        out.append(
-            ScheduleChangeOut(
-                task_id=t.id,
-                planned_start=ch.new_start,
-                planned_completion=ch.new_finish,
-                version=t.version,
-            )
+    await s.flush()  # version_id_col bumps versions / raises StaleDataError
+    return [
+        ScheduleChangeOut(
+            task_id=by_id[ch.task_id].id,
+            planned_start=ch.new_start,
+            planned_completion=ch.new_finish,
+            version=by_id[ch.task_id].version,
         )
-    return out
+        for ch in result
+    ]

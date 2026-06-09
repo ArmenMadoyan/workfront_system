@@ -184,6 +184,7 @@ class Project(Base):
         Index("ix_project_customer_program", "customer_id", "program_id"),
         Index("ix_project_customer_status", "customer_id", "status"),
     )
+    __mapper_args__ = {"version_id_col": version}
 
 
 class Task(Base):
@@ -214,6 +215,9 @@ class Task(Base):
         Index("ix_task_customer_parent", "customer_id", "parent_id"),
         Index("ix_task_customer_status_due", "customer_id", "status", "planned_completion"),
     )
+    # Optimistic locking: every UPDATE/DELETE appends `AND version = :loaded` and
+    # auto-bumps it; a concurrent write makes rowcount 0 -> StaleDataError.
+    __mapper_args__ = {"version_id_col": version}
 
 
 class Issue(Base):

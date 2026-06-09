@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 import uuid
 
-from confluent_kafka import Consumer, Producer
+from confluent_kafka import Consumer, Producer, TopicPartition
+from sqlalchemy.orm.exc import StaleDataError
 
 from wf_core.config import settings
 from wf_core.db import session_scope
@@ -81,6 +83,12 @@ def run() -> None:
                     changes = process_schedule_changed(s, event_id, task_id)
                 consumer.commit(msg)
                 log.info("processed event %s -> %d downstream changes", event_id, len(changes))
+            except StaleDataError:
+                # a human edited a task mid-cascade and won. Don't commit the
+                # offset; seek back so the next poll recomputes against fresh state.
+                log.warning("version conflict for key %s; re-delivering for recompute", msg.key())
+                consumer.seek(TopicPartition(msg.topic(), msg.partition(), msg.offset()))
+                time.sleep(0.2)
             except Exception:
                 log.exception("processing failed; routing to %s", DLQ)
                 dlq.produce(DLQ, key=msg.key(), value=msg.value(), headers=msg.headers())
