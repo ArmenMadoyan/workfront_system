@@ -52,26 +52,31 @@ from .ws import manager
 async def _redis_subscriber() -> None:
     """Subscribe to project:* and push cascade events to local WebSockets.
 
-    Resilient: if Redis isn't up (pure local mode), we log and skip — the api
-    still serves REST/WS, with the inline-cascade path covering the demo.
+    Resilient reconnect loop: a transient Redis hiccup must not permanently
+    disable WS fan-out. Runs until the task is cancelled (app shutdown).
     """
     try:
         import redis.asyncio as aioredis
     except ImportError:
         log.warning("redis not installed; WS fan-out disabled")
         return
-    try:
-        r = aioredis.from_url(settings.redis_url)
-        pubsub = r.pubsub()
-        await pubsub.psubscribe("project:*")
-        log.info("subscribed to redis project:* for WS fan-out")
-        async for msg in pubsub.listen():
-            if msg.get("type") != "pmessage":
-                continue
-            event = json.loads(msg["data"])
-            await manager.push_local(str(event.get("project_id")), event)
-    except Exception as exc:  # noqa: BLE001
-        log.warning("redis fan-out unavailable: %s", exc)
+    while True:
+        try:
+            r = aioredis.from_url(settings.redis_url)
+            async with r.pubsub() as pubsub:
+                await pubsub.psubscribe("project:*")
+                log.info("subscribed to redis project:* for WS fan-out")
+                while True:
+                    msg = await pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
+                    if msg is None or msg.get("type") != "pmessage":
+                        continue
+                    event = json.loads(msg["data"])
+                    await manager.push_local(str(event.get("project_id")), event)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001
+            log.warning("redis fan-out reconnecting after error: %s", exc)
+            await asyncio.sleep(2)
 
 
 @contextlib.asynccontextmanager
